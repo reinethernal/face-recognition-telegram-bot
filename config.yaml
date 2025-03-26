@@ -1,0 +1,18 @@
+telegram:
+  bot_token: 'TELEGRAM_BOT_TOKEN'
+  chat_id: 'your_chat_id_here'
+  admin_ids:
+    - 123456789
+    - 987654321 
+
+streams:
+  stream1: 'rtsp://username:password@IP:554'
+  stream2: 'rtsp://192.168.130.17/videodevice'
+
+known_faces_path: 'known_faces'
+
+logging:
+  found_faces: false  # Отключаем логи "Найдено лиц: ..."
+  no_faces: true     # Оставляем логи "Лица не обнаружены..."
+  known_faces: false # Отключаем логи "Загружено лицо: ..."
+  aiogram_dispatcher: false # Отключаем логи aiogram.dispatcher
