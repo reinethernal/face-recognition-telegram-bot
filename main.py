@@ -144,6 +144,16 @@ def start_web_interface():
     logger.info(f"Веб-интерфейс запущен: http://{web_host}:{web_port}")
     return thread
 
+
+def start_web_interface():
+    app = create_web_app(known_face_encodings, known_face_names, known_faces_lock, known_faces_path)
+    config_uvicorn = uvicorn.Config(app=app, host=web_host, port=web_port, log_level="info")
+    server = uvicorn.Server(config_uvicorn)
+    thread = Thread(target=server.run, daemon=True)
+    thread.start()
+    logger.info(f"Веб-интерфейс запущен: http://{web_host}:{web_port}")
+    return thread
+
 # Состояния для FSM
 class AddFace(StatesGroup):
     waiting_for_photo = State()
@@ -151,6 +161,10 @@ class AddFace(StatesGroup):
 
 class StreamSelection(StatesGroup):
     waiting_for_stream = State()
+
+
+class AdminManagement(StatesGroup):
+    waiting_for_admins = State()
 
 
 class AdminManagement(StatesGroup):
@@ -177,6 +191,46 @@ def create_streams_keyboard():
     keyboard = [[KeyboardButton(text=str(stream))] for stream in config["streams"].keys()]
     keyboard.append([KeyboardButton(text="Отмена")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def format_admins_list() -> str:
+    if not admin_usernames:
+        return "Список администраторов пуст."
+    sorted_admins = sorted(admin_usernames)
+    return "\n".join(f"- @{name}" for name in sorted_admins)
+
+
+async def prompt_admins_update(message: types.Message, state: FSMContext):
+    if not is_admin_user(message.from_user):
+        await message.answer("У вас нет прав на управление администраторами.", reply_markup=create_main_menu())
+        await state.clear()
+        return
+
+    current_admins = format_admins_list()
+    await message.answer(
+        "Текущий список администраторов:\n"
+        f"{current_admins}\n\n"
+        "Отправьте usernames (через пробел или с новой строки) для установки нового списка."
+        " Ваш username будет автоматически добавлен.",
+        reply_markup=create_main_menu(True),
+    )
+    await state.set_state(AdminManagement.waiting_for_admins)
+
+
+async def send_web_code(message: types.Message):
+    try:
+        if not is_admin_user(message.from_user):
+            await message.answer("У вас нет прав на получение кода.", reply_markup=create_main_menu())
+            return
+        username = require_username(message.from_user)
+        code = generate_web_code(username)
+        await message.answer(
+            f"Код для входа в веб-интерфейс: <b>{code}</b>\n"
+            "Время действия — 5 минут. Введите его вместе со своим username в форме входа веб-интерфейса.",
+            reply_markup=create_main_menu(True),
+        )
+    except ValueError as err:
+        await message.answer(str(err), reply_markup=create_main_menu())
 
 
 def format_admins_list() -> str:
@@ -280,6 +334,16 @@ async def start(message: types.Message, state: FSMContext):
     main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
     await state.clear()  # Очищаем состояние при старте
     await message.answer("Добро пожаловать! Обработка потоков уже запущена. Выберите действие:", reply_markup=main_menu_reply_markup)
+
+
+@dp.message(Command(commands=["admins"]))
+async def admins_command(message: types.Message, state: FSMContext):
+    await prompt_admins_update(message, state)
+
+
+@dp.message(Command(commands=["webcode"]))
+async def webcode_command(message: types.Message):
+    await send_web_code(message)
 
 
 @dp.message(Command(commands=["admins"]))
@@ -407,6 +471,31 @@ async def receive_name(message: types.Message, state: FSMContext):
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
     
+    await state.clear()
+
+
+@dp.message(StateFilter(AdminManagement.waiting_for_admins), lambda message: message.text is not None)
+async def update_admins(message: types.Message, state: FSMContext):
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
+
+    if not is_admin_user(message.from_user):
+        await message.answer("У вас нет прав на изменение списка администраторов.", reply_markup=main_menu_reply_markup)
+        await state.clear()
+        return
+
+    usernames_raw = {part.strip() for part in message.text.replace("\n", " ").split(" ") if part.strip()}
+    try:
+        sender_username = require_username(message.from_user)
+    except ValueError as err:
+        await message.answer(str(err), reply_markup=main_menu_reply_markup)
+        await state.clear()
+        return
+
+    updated = replace_admin_usernames(usernames_raw | {sender_username})
+    await message.answer(
+        "Список администраторов обновлён:\n" + "\n".join(f"- @{u}" for u in sorted(updated)),
+        reply_markup=main_menu_reply_markup,
+    )
     await state.clear()
 
 
