@@ -11,6 +11,15 @@ streams:
 
 known_faces_path: 'known_faces'
 
+yolo:
+  model_path: 'yolo11n-face.pt'
+  confidence: 0.35
+  stable_frames: 3
+
+web:
+  host: '0.0.0.0'
+  port: 8000
+
 logging:
   found_faces: false  # Отключаем логи "Найдено лиц: ..."
   no_faces: true     # Оставляем логи "Лица не обнаружены..."
