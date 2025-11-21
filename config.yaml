@@ -3,13 +3,24 @@ telegram:
   chat_id: 'your_chat_id_here'
   admin_ids:
     - 123456789
-    - 987654321 
+    - 987654321
+  admin_usernames: []
+  admin_usernames_path: 'admins.yaml'
 
 streams:
   stream1: 'rtsp://username:password@IP:554'
   stream2: 'rtsp://192.168.130.17/videodevice'
 
 known_faces_path: 'known_faces'
+
+yolo:
+  model_path: 'yolo11n-face.pt'
+  confidence: 0.35
+  stable_frames: 3
+
+web:
+  host: '0.0.0.0'
+  port: 8000
 
 logging:
   found_faces: false  # Отключаем логи "Найдено лиц: ..."
