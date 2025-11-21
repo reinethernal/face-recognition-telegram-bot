@@ -4,11 +4,9 @@ import cv2
 import yaml
 import logging
 import importlib.util
-import secrets
-import string
 import time
 from threading import Lock, Thread
-from typing import Dict, Iterable, List, Set
+from typing import Dict
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ContentType, FSInputFile
@@ -63,34 +61,9 @@ web_host = web_config.get("host", "0.0.0.0")
 web_port = int(web_config.get("port", 8000))
 
 known_faces_lock = Lock()
-admin_lock = Lock()
-web_code_lock = Lock()
 
 # Загрузка известных лиц
 known_face_encodings, known_face_names = load_known_faces(known_faces_path)
-
-def _load_admin_usernames(path: str, defaults: Iterable[str]) -> Set[str]:
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-            usernames: List[str] = data.get("usernames", [])
-            return {normalize_username(u) for u in usernames}
-    return {normalize_username(u) for u in defaults}
-
-
-def _save_admin_usernames(path: str, usernames: Iterable[str]) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump({"usernames": sorted({normalize_username(u) for u in usernames})}, f, allow_unicode=True)
-
-
-def normalize_username(username: str) -> str:
-    return username.lstrip("@").lower()
-
-
-admin_usernames: Set[str] = _load_admin_usernames(admin_usernames_path, initial_admin_usernames)
-if not os.path.exists(admin_usernames_path) and admin_usernames:
-    _save_admin_usernames(admin_usernames_path, admin_usernames)
 
 # Словарь для хранения пути к последнему кадру для каждого потока
 last_frames_paths = {stream: None for stream in config["streams"].keys()}
@@ -106,9 +79,6 @@ detection_streaks: Dict[str, Dict[str, int]] = {stream: {} for stream in config[
 
 # Словарь для запросов на получение кадров (поток: chat_id)
 frame_requests = {}
-
-# Временные коды авторизации для веб-интерфейса (username -> {code, expires})
-web_login_codes: Dict[str, Dict[str, float]] = {}
 
 # Время для сброса состояния (3 секунды)
 RESET_TIMEOUT = 3
@@ -130,13 +100,7 @@ for filename in os.listdir(plugins_dir):
 
 
 def start_web_interface():
-    app = create_web_app(
-        known_face_encodings,
-        known_face_names,
-        known_faces_lock,
-        known_faces_path,
-        validate_web_code,
-    )
+    app = create_web_app(known_face_encodings, known_face_names, known_faces_lock, known_faces_path)
     config_uvicorn = uvicorn.Config(app=app, host=web_host, port=web_port, log_level="info")
     server = uvicorn.Server(config_uvicorn)
     thread = Thread(target=server.run, daemon=True)

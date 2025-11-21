@@ -15,7 +15,6 @@ def create_web_app(
     known_face_names,
     known_faces_lock: Lock,
     known_faces_path: str,
-    validate_web_code,
 ):
     app = FastAPI(title="Face Recognition Bot", version="1.0")
 
@@ -24,15 +23,7 @@ def create_web_app(
         return {"status": "ok"}
 
     @app.post("/users")
-    async def add_user(
-        name: str = Form(...),
-        photo: UploadFile = File(...),
-        username: str = Form(...),
-        code: str = Form(...),
-    ):
-        if not validate_web_code(username, code):
-            raise HTTPException(status_code=403, detail="Недействительный код или нет прав")
-
+    async def add_user(name: str = Form(...), photo: UploadFile = File(...)):
         if photo.content_type not in {"image/jpeg", "image/png"}:
             raise HTTPException(status_code=400, detail="Поддерживаются только JPEG/PNG")
 
