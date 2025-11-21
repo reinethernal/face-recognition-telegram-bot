@@ -32,7 +32,9 @@ with open("config.yaml", "r") as file:
 # Инициализация бота и диспетчера
 bot_token = config["telegram"]["bot_token"]
 chat_id = config["telegram"]["chat_id"]
-admin_ids = config["telegram"]["admin_ids"]
+admin_ids = config["telegram"].get("admin_ids", [])
+admin_usernames_path = config["telegram"].get("admin_usernames_path", "admins.yaml")
+initial_admin_usernames = set(config["telegram"].get("admin_usernames", []))
 bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -114,6 +116,10 @@ class AddFace(StatesGroup):
 class StreamSelection(StatesGroup):
     waiting_for_stream = State()
 
+
+class AdminManagement(StatesGroup):
+    waiting_for_admins = State()
+
 # Функция для создания главного меню с учётом прав
 def create_main_menu(is_admin=False):
     keyboard = [
@@ -123,6 +129,8 @@ def create_main_menu(is_admin=False):
         keyboard.extend([
             [KeyboardButton(text="Добавить лицо")],
             [KeyboardButton(text="Получить кадр")],
+            [KeyboardButton(text="Администраторы")],
+            [KeyboardButton(text="Код для веб")],
         ])
         for plugin_name in plugins.keys():
             keyboard.append([KeyboardButton(text=f"Плагин: {plugin_name}")])
@@ -134,25 +142,131 @@ def create_streams_keyboard():
     keyboard.append([KeyboardButton(text="Отмена")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
+
+def format_admins_list() -> str:
+    if not admin_usernames:
+        return "Список администраторов пуст."
+    sorted_admins = sorted(admin_usernames)
+    return "\n".join(f"- @{name}" for name in sorted_admins)
+
+
+async def prompt_admins_update(message: types.Message, state: FSMContext):
+    if not is_admin_user(message.from_user):
+        await message.answer("У вас нет прав на управление администраторами.", reply_markup=create_main_menu())
+        await state.clear()
+        return
+
+    current_admins = format_admins_list()
+    await message.answer(
+        "Текущий список администраторов:\n"
+        f"{current_admins}\n\n"
+        "Отправьте usernames (через пробел или с новой строки) для установки нового списка."
+        " Ваш username будет автоматически добавлен.",
+        reply_markup=create_main_menu(True),
+    )
+    await state.set_state(AdminManagement.waiting_for_admins)
+
+
+async def send_web_code(message: types.Message):
+    try:
+        if not is_admin_user(message.from_user):
+            await message.answer("У вас нет прав на получение кода.", reply_markup=create_main_menu())
+            return
+        username = require_username(message.from_user)
+        code = generate_web_code(username)
+        await message.answer(
+            f"Код для входа в веб-интерфейс: <b>{code}</b>\n"
+            "Время действия — 5 минут. Введите его вместе со своим username в форме входа веб-интерфейса.",
+            reply_markup=create_main_menu(True),
+        )
+    except ValueError as err:
+        await message.answer(str(err), reply_markup=create_main_menu())
+
 # Проверка, является ли пользователь администратором
-def is_admin(user_id):
-    return user_id in admin_ids
+def is_admin_user(user: types.User) -> bool:
+    if user.id in admin_ids:
+        return True
+    if user.username:
+        return normalize_username(user.username) in admin_usernames
+    return False
+
+
+def require_username(user: types.User) -> str:
+    if not user.username:
+        raise ValueError("У вас не указан username в Telegram. Установите его в настройках и попробуйте снова.")
+    return normalize_username(user.username)
+
+
+def add_admin_usernames(usernames: Iterable[str]) -> Set[str]:
+    normalized = {normalize_username(u) for u in usernames if u}
+    with admin_lock:
+        admin_usernames.update(normalized)
+        _save_admin_usernames(admin_usernames_path, admin_usernames)
+        return set(admin_usernames)
+
+
+def replace_admin_usernames(usernames: Iterable[str]) -> Set[str]:
+    normalized = {normalize_username(u) for u in usernames if u}
+    with admin_lock:
+        admin_usernames.clear()
+        admin_usernames.update(normalized)
+        _save_admin_usernames(admin_usernames_path, admin_usernames)
+        return set(admin_usernames)
+
+
+def generate_web_code(username: str, ttl_seconds: int = 300) -> str:
+    code = "".join(secrets.choice(string.digits) for _ in range(6))
+    expires = time.time() + ttl_seconds
+    with web_code_lock:
+        web_login_codes[normalize_username(username)] = {"code": code, "expires": expires}
+    return code
+
+
+def validate_web_code(username: str, code: str) -> bool:
+    normalized = normalize_username(username)
+    if normalized not in admin_usernames:
+        return False
+    with web_code_lock:
+        entry = web_login_codes.get(normalized)
+        if not entry:
+            return False
+        if entry["code"] != code:
+            return False
+        if time.time() > entry["expires"]:
+            del web_login_codes[normalized]
+            return False
+        del web_login_codes[normalized]
+        return True
 
 # Обработка команды /start
 @dp.message(Command(commands=["start"]))
 async def start(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    main_menu_reply_markup = create_main_menu(is_admin(user_id))
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
     await state.clear()  # Очищаем состояние при старте
     await message.answer("Добро пожаловать! Обработка потоков уже запущена. Выберите действие:", reply_markup=main_menu_reply_markup)
 
+
+@dp.message(Command(commands=["admins"]))
+async def admins_command(message: types.Message, state: FSMContext):
+    await prompt_admins_update(message, state)
+
+
+@dp.message(Command(commands=["webcode"]))
+async def webcode_command(message: types.Message):
+    await send_web_code(message)
+
 # Обработка выбора команды через кнопки
-@dp.message(lambda message: message.text and (message.text in ["Начать", "Добавить лицо", "Получить кадр"] or message.text.startswith("Плагин: ")))
+@dp.message(
+    lambda message: message.text
+    and (
+        message.text in ["Начать", "Добавить лицо", "Получить кадр", "Администраторы", "Код для веб"]
+        or message.text.startswith("Плагин: ")
+    )
+)
 async def handle_choice(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    main_menu_reply_markup = create_main_menu(is_admin(user_id))
-    
-    if not is_admin(user_id) and message.text != "Начать":
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
+
+    if not is_admin_user(message.from_user) and message.text != "Начать":
         await message.answer("У вас нет прав на выполнение этой команды.", reply_markup=main_menu_reply_markup)
         await state.clear()
         return
@@ -166,6 +280,10 @@ async def handle_choice(message: types.Message, state: FSMContext):
     elif choice == "Получить кадр":
         await state.set_state(StreamSelection.waiting_for_stream)
         await message.answer("Выберите поток:", reply_markup=create_streams_keyboard())
+    elif choice == "Администраторы":
+        await prompt_admins_update(message, state)
+    elif choice == "Код для веб":
+        await send_web_code(message)
     elif choice.startswith("Плагин: "):
         plugin_name = choice[len("Плагин: "):]
         if plugin_name in plugins and hasattr(plugins[plugin_name], "execute"):
@@ -178,15 +296,14 @@ async def handle_choice(message: types.Message, state: FSMContext):
 # Обработка получения фотографии для добавления лица
 @dp.message(StateFilter(AddFace.waiting_for_photo), lambda message: message.content_type == ContentType.PHOTO)
 async def receive_photo(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    main_menu_reply_markup = create_main_menu(is_admin(user_id))
-    
-    if not is_admin(user_id):
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
+
+    if not is_admin_user(message.from_user):
         await message.answer("У вас нет прав на добавление лиц.", reply_markup=main_menu_reply_markup)
         await state.clear()
         return
 
-    temp_file_path = os.path.join(known_faces_path, f"temp_{user_id}_{message.message_id}.jpg")
+    temp_file_path = os.path.join(known_faces_path, f"temp_{message.from_user.id}_{message.message_id}.jpg")
 
     try:
         file_id = message.photo[-1].file_id
@@ -215,10 +332,9 @@ async def receive_photo(message: types.Message, state: FSMContext):
 # Обработка ввода имени для нового лица
 @dp.message(StateFilter(AddFace.waiting_for_name), lambda message: message.text is not None)
 async def receive_name(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    main_menu_reply_markup = create_main_menu(is_admin(user_id))
-    
-    if not is_admin(user_id):
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
+
+    if not is_admin_user(message.from_user):
         await message.answer("У вас нет прав на добавление лиц.", reply_markup=main_menu_reply_markup)
         await state.clear()
         return
@@ -257,13 +373,37 @@ async def receive_name(message: types.Message, state: FSMContext):
     
     await state.clear()
 
+
+@dp.message(StateFilter(AdminManagement.waiting_for_admins), lambda message: message.text is not None)
+async def update_admins(message: types.Message, state: FSMContext):
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
+
+    if not is_admin_user(message.from_user):
+        await message.answer("У вас нет прав на изменение списка администраторов.", reply_markup=main_menu_reply_markup)
+        await state.clear()
+        return
+
+    usernames_raw = {part.strip() for part in message.text.replace("\n", " ").split(" ") if part.strip()}
+    try:
+        sender_username = require_username(message.from_user)
+    except ValueError as err:
+        await message.answer(str(err), reply_markup=main_menu_reply_markup)
+        await state.clear()
+        return
+
+    updated = replace_admin_usernames(usernames_raw | {sender_username})
+    await message.answer(
+        "Список администраторов обновлён:\n" + "\n".join(f"- @{u}" for u in sorted(updated)),
+        reply_markup=main_menu_reply_markup,
+    )
+    await state.clear()
+
 # Обработка выбора потока для получения кадра
 @dp.message(StateFilter(StreamSelection.waiting_for_stream))
 async def select_stream(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    main_menu_reply_markup = create_main_menu(is_admin(user_id))
-    
-    if not is_admin(user_id):
+    main_menu_reply_markup = create_main_menu(is_admin_user(message.from_user))
+
+    if not is_admin_user(message.from_user):
         await message.answer("У вас нет прав на получение кадров.", reply_markup=main_menu_reply_markup)
         await state.clear()
         return
@@ -321,7 +461,7 @@ async def process_stream(stream_name, stream_url, task_manager):
                 photo = FSInputFile(frame_path)
                 chat_id_to_send = frame_requests[stream_name]
                 await bot.send_photo(chat_id=chat_id_to_send, photo=photo)
-                await bot.send_message(chat_id=chat_id_to_send, text="Кадр отправлен.", reply_markup=create_main_menu(is_admin(chat_id_to_send)))
+                await bot.send_message(chat_id=chat_id_to_send, text="Кадр отправлен.", reply_markup=create_main_menu())
                 del frame_requests[stream_name]  # Удаляем запрос после отправки
                 logger.info(f"Отправлен запрошенный кадр из потока {stream_name}")
             

@@ -3,7 +3,9 @@ telegram:
   chat_id: 'your_chat_id_here'
   admin_ids:
     - 123456789
-    - 987654321 
+    - 987654321
+  admin_usernames: []
+  admin_usernames_path: 'admins.yaml'
 
 streams:
   stream1: 'rtsp://username:password@IP:554'
