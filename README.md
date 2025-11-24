@@ -39,11 +39,13 @@
 2. **Установите зависимости**:
    ```bash
    sudo apt update
-   sudo apt install python3 python3-pip python3-venv libopencv-dev python3-opencv -y
+   sudo apt install python3 python3-pip python3-venv -y
    python3 -m venv venv
    source venv/bin/activate
-   pip install aiogram opencv-python pyyaml
+   pip install -r requirements.txt
    ```
+   > Используется `opencv-python-headless`, чтобы избежать ошибок вида `ImportError: libGL.so.1: cannot open shared object file` на серверах без графических библиотек. Если нужен просмотр окон (`cv2.imshow`), замените пакет на `opencv-python` и установите системную библиотеку `libgl1`.
+   > Пакет `face-recognition` ставит `dlib`; если под вашу платформу нет готового колеса, предварительно установите инструменты сборки и BLAS: `sudo apt install build-essential cmake libopenblas-dev -y`.
 
 3. **Настройте `config.yaml`**:
    - Скопируйте пример конфигурации:
