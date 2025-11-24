@@ -6,5 +6,6 @@ class Plugin:
     async def example_method(self, message, state):
         await message.answer(f"Метод {self.name}.example_method вызван!")
 
+
 def load_plugins():
     return [Plugin("TestPlugin")]
